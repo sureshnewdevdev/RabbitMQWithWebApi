@@ -147,6 +147,19 @@ Both APIs use the same configuration section in `appsettings.json`:
 }
 ```
 
+For a RabbitMQ container published like `0.0.0.0:5672->5672` and `0.0.0.0:15672->15672`, the existing defaults already match the Docker setup:
+
+- `HostName`: `localhost`
+- `Port`: `5672`
+- Management UI: `http://localhost:15672`
+
+If your APIs run on the host machine, you usually do **not** need to change the RabbitMQ settings.
+
+If your APIs run inside another container instead of directly on the host, change `HostName` from `localhost` to a hostname reachable from that container, such as:
+
+- the RabbitMQ container name on the same Docker network, or
+- `host.docker.internal` when connecting back to Docker Desktop's host-published port.
+
 If your RabbitMQ server runs elsewhere, update the values in both application settings files.
 
 ## Useful endpoints

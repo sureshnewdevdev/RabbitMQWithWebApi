@@ -1,4 +1,4 @@
-namespace ProducerApi.Services;
+namespace ConsumerApi.Services;
 
 public sealed class RabbitMqOptions
 {
