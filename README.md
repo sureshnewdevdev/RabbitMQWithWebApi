@@ -1,183 +1,188 @@
-# RabbitMQ With Two .NET 9 Web APIs
+# RabbitMQ With 3 .NET 9 Microservices (Products, Carts, Payments)
 
-This sample contains **two ASP.NET Core Web API applications targeting .NET 9** that exchange data through **RabbitMQ**:
+This sample implements an event-driven flow using **RabbitMQ** between three microservices:
 
-- **Producer API** publishes JSON messages to a RabbitMQ exchange.
-- **Consumer API** listens to the RabbitMQ queue and stores received messages in memory.
+- **Products API**
+  - Stores products in a static in-memory collection.
+  - Publishes `product.created` when a product is created.
+- **Carts API**
+  - Consumes `product.created` and keeps a local product catalog cache.
+  - Stores carts in a static in-memory collection.
+  - Publishes `cart.checkout` when a cart is checked out.
+- **Payments API**
+  - Consumes `cart.checkout`.
+  - Stores approved payments in a static in-memory collection.
 
 ## Solution structure
 
 ```text
 src/
-├── ProducerApi/
-└── ConsumerApi/
+├── ProducerApi/   (existing sample)
+├── ConsumerApi/   (existing sample)
+├── ProductsApi/
+├── CartsApi/
+└── PaymentsApi/
 ```
 
-## Architecture
+## Event flow
 
-1. Send an HTTP `POST` request to the **Producer API**.
-2. The Producer API serializes the payload and publishes it to RabbitMQ.
-3. RabbitMQ routes the message from the direct exchange to the queue.
-4. The **Consumer API** reads the message from the queue and keeps it in memory.
-5. Call the Consumer API to verify the message was received.
+1. `POST /products` on Products API.
+2. Products API saves product and publishes `product.created`.
+3. Carts API consumer receives `product.created` and updates local product catalog.
+4. `POST /carts/{cartId}/items` on Carts API adds cart items using that catalog.
+5. `POST /carts/{cartId}/checkout` publishes `cart.checkout`.
+6. Payments API consumer receives `cart.checkout` and stores an approved payment record.
+
+---
 
 ## Prerequisites
 
 - [.NET 9 SDK](https://dotnet.microsoft.com/download)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) or another Docker runtime
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) or equivalent Docker runtime
+- `curl` (optional, for quick testing)
 
-## RabbitMQ setup
-
-A `docker-compose.yml` file is included to start RabbitMQ locally with the management UI.
-
-### 1. Start RabbitMQ
+## 1) Start RabbitMQ
 
 ```bash
 docker compose up -d
 ```
 
-This starts RabbitMQ with:
+RabbitMQ endpoints:
 
-- AMQP port: `5672`
+- AMQP: `localhost:5672`
 - Management UI: `http://localhost:15672`
 - Username: `guest`
 - Password: `guest`
 
-### 2. Verify RabbitMQ is running
+## 2) Run all three microservices
 
-Open the management UI in your browser:
+Open **three terminals** from repository root.
 
-```text
-http://localhost:15672
-```
-
-Login with:
-
-- **Username:** `guest`
-- **Password:** `guest`
-
-## Run the APIs
-
-Open two terminals from the repository root.
-
-### Terminal 1: Run the Producer API
+### Terminal A: Products API
 
 ```bash
-dotnet run --project src/ProducerApi/ProducerApi.csproj
+dotnet run --project src/ProductsApi/ProductsApi.csproj
 ```
 
-The Producer API will be available at a local URL such as:
-
-```text
-http://localhost:5062
-```
-
-### Terminal 2: Run the Consumer API
+### Terminal B: Carts API
 
 ```bash
-dotnet run --project src/ConsumerApi/ConsumerApi.csproj
+dotnet run --project src/CartsApi/CartsApi.csproj
 ```
 
-The Consumer API will be available at a local URL such as:
-
-```text
-http://localhost:5167
-```
-
-> The exact ports may vary depending on your environment. Check the terminal output after `dotnet run`.
-
-## How to exchange data
-
-### 1. Publish a message through the Producer API
-
-Example using `curl`:
+### Terminal C: Payments API
 
 ```bash
-curl -X POST http://localhost:5062/messages \
+dotnet run --project src/PaymentsApi/PaymentsApi.csproj
+```
+
+> Port values are assigned by ASP.NET at runtime unless launch profiles force specific ports. Use each terminal log or Swagger URL output.
+
+---
+
+## 3) End-to-end test scenario
+
+Use the following sequence to test the full asynchronous message exchange.
+
+For examples below, assume:
+
+- Products API = `http://localhost:5001`
+- Carts API = `http://localhost:5002`
+- Payments API = `http://localhost:5003`
+
+Adjust to your actual ports.
+
+### Step 1: Create a product (Products API)
+
+```bash
+curl -X POST http://localhost:5001/products \
   -H "Content-Type: application/json" \
   -d '{
-    "sender": "Order API",
-    "text": "Order #1001 created"
+    "name": "Wireless Mouse",
+    "price": 49.99
   }'
 ```
 
-Expected response:
+Save the returned `id` as `PRODUCT_ID`.
 
-```json
-{
-  "id": "generated-guid",
-  "sender": "Order API",
-  "text": "Order #1001 created",
-  "sentAtUtc": "2026-03-19T12:00:00+00:00"
-}
-```
-
-### 2. Read received messages from the Consumer API
+### Step 2: Confirm Carts API received product via RabbitMQ
 
 ```bash
-curl http://localhost:5167/messages
+curl http://localhost:5002/catalog
 ```
 
-Expected response:
+You should see the product from Step 1.
 
-```json
-[
-  {
-    "id": "same-guid-as-published-message",
-    "sender": "Order API",
-    "text": "Order #1001 created",
-    "sentAtUtc": "2026-03-19T12:00:00+00:00"
-  }
-]
+### Step 3: Add item to cart (Carts API)
+
+Choose any GUID for `CART_ID`, for example:
+
+```text
+11111111-1111-1111-1111-111111111111
 ```
 
-## RabbitMQ configuration
-
-Both APIs use the same configuration section in `appsettings.json`:
-
-```json
-"RabbitMq": {
-  "HostName": "localhost",
-  "Port": 5672,
-  "UserName": "guest",
-  "Password": "guest",
-  "ExchangeName": "demo.exchange",
-  "QueueName": "demo.queue",
-  "RoutingKey": "demo.message"
-}
+```bash
+curl -X POST http://localhost:5002/carts/11111111-1111-1111-1111-111111111111/items \
+  -H "Content-Type: application/json" \
+  -d '{
+    "productId": "PRODUCT_ID",
+    "quantity": 2
+  }'
 ```
 
-For a RabbitMQ container published like `0.0.0.0:5672->5672` and `0.0.0.0:15672->15672`, the existing defaults already match the Docker setup:
+Replace `PRODUCT_ID` with the real GUID string.
 
-- `HostName`: `localhost`
-- `Port`: `5672`
-- Management UI: `http://localhost:15672`
+### Step 4: Checkout cart (Carts API publishes `cart.checkout`)
 
-If your APIs run on the host machine, you usually do **not** need to change the RabbitMQ settings.
+```bash
+curl -X POST http://localhost:5002/carts/11111111-1111-1111-1111-111111111111/checkout \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardHolder": "John Doe",
+    "cardNumber": "4111111111111111",
+    "currency": "USD"
+  }'
+```
 
-If your APIs run inside another container instead of directly on the host, change `HostName` from `localhost` to a hostname reachable from that container, such as:
+### Step 5: Verify payment processed (Payments API)
 
-- the RabbitMQ container name on the same Docker network, or
-- `host.docker.internal` when connecting back to Docker Desktop's host-published port.
+```bash
+curl http://localhost:5003/payments
+```
 
-If your RabbitMQ server runs elsewhere, update the values in both application settings files.
+You should see a payment record with status `Approved`.
 
-## Useful endpoints
+---
 
-### Producer API
+## API endpoints
 
-- `GET /` - basic service info
-- `POST /messages` - publish a message to RabbitMQ
-- Swagger UI: `/swagger`
+### Products API
 
-### Consumer API
+- `GET /` - service info
+- `GET /products` - list in-memory products
+- `POST /products` - create product + publish `product.created`
+- Swagger: `/swagger`
 
-- `GET /` - basic service info
-- `GET /messages` - list all received messages currently stored in memory
-- Swagger UI: `/swagger`
+### Carts API
+
+- `GET /` - service info
+- `GET /catalog` - products known by cart service via RabbitMQ
+- `POST /carts/{cartId}/items` - add item to cart
+- `GET /carts/{cartId}` - read cart
+- `POST /carts/{cartId}/checkout` - publish `cart.checkout` and clear cart
+- Swagger: `/swagger`
+
+### Payments API
+
+- `GET /` - service info
+- `GET /payments` - list in-memory payment records
+- Swagger: `/swagger`
+
+---
 
 ## Notes
 
-- The Consumer API stores received messages **in memory only** for demo purposes.
-- Restarting the Consumer API clears the in-memory list, but RabbitMQ keeps queued messages until consumed.
-- The queue and exchange are declared automatically by the applications.
+- All data storage is static in-memory for demo/testing purposes only.
+- Restarting a service clears that service's static data.
+- RabbitMQ exchange/queues are created automatically by the services.
+- Existing `ProducerApi` and `ConsumerApi` projects are left unchanged as legacy sample components.
